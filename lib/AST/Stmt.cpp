@@ -483,14 +483,23 @@ bool CaseLabelItem::isSyntacticallyExhaustive() const {
          !getPattern()->isRefutablePattern(/*allowIsPatternCoercion*/ true);
 }
 
-bool DoCatchStmt::isSyntacticallyExhaustive() const {
-  for (auto clause : getCatches()) {
+/// Whether one of the given 'catch' clauses is syntactically exhaustive.
+static bool isSyntacticallyExhaustive(ArrayRef<CaseStmt *> catches) {
+  for (auto clause : catches) {
     for (auto &LabelItem : clause->getCaseLabelItems()) {
       if (LabelItem.isSyntacticallyExhaustive())
         return true;
     }
   }
   return false;
+}
+
+bool DoCatchStmt::isSyntacticallyExhaustive() const {
+  return ::isSyntacticallyExhaustive(getCatches());
+}
+
+bool GuardStmt::isSyntacticallyExhaustive() const {
+  return ::isSyntacticallyExhaustive(getCatches());
 }
 
 BraceStmt *ForEachStmt::getDesugaredStmt() {
@@ -504,20 +513,27 @@ Type DoCatchStmt::getExplicitCaughtType() const {
   return CatchNode(const_cast<DoCatchStmt *>(this)).getExplicitCaughtType(ctx);
 }
 
+/// The type of the error that the given 'catch' clauses match, which the
+/// type of the pattern of the first clause tells, or null if they haven't been
+/// type-checked.
+static Type getCaughtErrorType(ArrayRef<CaseStmt *> catches) {
+  auto firstPattern = catches.front()->getCaseLabelItems().front().getPattern();
+  if (firstPattern->hasType() && !firstPattern->getType()->hasError())
+    return firstPattern->getType();
+
+  return Type();
+}
+
 Type DoCatchStmt::getCaughtErrorType() const {
   // Check for an explicitly-specified error type.
   if (Type explicitError = getExplicitCaughtType())
     return explicitError;
 
-  auto firstPattern = getCatches()
-    .front()
-    ->getCaseLabelItems()
-    .front()
-    .getPattern();
-  if (firstPattern->hasType() && !firstPattern->getType()->hasError())
-    return firstPattern->getType();
+  return ::getCaughtErrorType(getCatches());
+}
 
-  return Type();
+Type GuardStmt::getCaughtErrorType() const {
+  return ::getCaughtErrorType(getCatches());
 }
 
 void LabeledConditionalStmt::setCond(StmtCondition e) {
@@ -775,6 +791,44 @@ bool IfStmt::isSyntacticallyExhaustive() const {
 GuardStmt::GuardStmt(SourceLoc GuardLoc, Expr *Cond, BraceStmt *Body,
                      std::optional<bool> implicit, ASTContext &Ctx)
     : GuardStmt(GuardLoc, exprToCond(Cond, Ctx), Body, implicit) {}
+
+/// Whether the location \p lhs comes before \p rhs, which must be in the same
+/// buffer. Unlike SourceManager::isBeforeInBuffer, this doesn't need a source
+/// manager, which AST nodes can't always get to.
+static bool isBeforeInSameBuffer(SourceLoc lhs, SourceLoc rhs) {
+  return lhs.getOpaquePointerValue() < rhs.getOpaquePointerValue();
+}
+
+SourceLoc GuardStmt::getEndLoc() const {
+  if (Catches.empty())
+    return Body->getEndLoc();
+
+  // The clauses can come in either order.
+  SourceLoc catchEnd = Catches.back()->getEndLoc();
+  if (Body->isImplicit() || isBeforeInSameBuffer(Body->getEndLoc(), catchEnd))
+    return catchEnd;
+  return Body->getEndLoc();
+}
+
+void GuardStmt::setCatches(MutableArrayRef<CaseStmt *> catches) {
+  Catches = catches;
+  for (auto *catchStmt : Catches)
+    catchStmt->setParentStmt(this);
+}
+
+bool GuardStmt::isElseAfterCatches() const {
+  if (Catches.empty() || Body->isImplicit())
+    return false;
+  return isBeforeInSameBuffer(Catches.front()->getStartLoc(),
+                              Body->getStartLoc());
+}
+
+bool GuardStmt::hasDoBinding() const {
+  for (auto &elt : getCond())
+    if (elt.isDoBinding())
+      return true;
+  return false;
+}
 
 SourceLoc RepeatWhileStmt::getEndLoc() const { return Cond->getEndLoc(); }
 
@@ -1041,6 +1095,11 @@ CaseStmt *CaseStmt::findNextCaseStmt() const {
     return ::findNextCaseStmt(
         switchParent->getCases().begin(), switchParent->getCases().end(),
         this);
+  }
+
+  if (auto guardParent = dyn_cast<GuardStmt>(parent)) {
+    return ::findNextCaseStmt(guardParent->getCatches().begin(),
+                              guardParent->getCatches().end(), this);
   }
 
   auto doCatchParent = cast<DoCatchStmt>(parent);

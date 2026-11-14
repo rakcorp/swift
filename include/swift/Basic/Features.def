@@ -444,6 +444,10 @@ EXPERIMENTAL_FEATURE(GenerateBindingsForThrowingFunctionsInCXX, false)
 /// Enable reference bindings.
 EXPERIMENTAL_FEATURE(ReferenceBindings, true)
 
+/// Enable 'do' bindings in 'guard' conditions, with 'catch' clauses handling
+/// the errors they throw.
+EXPERIMENTAL_FEATURE(GuardDoCatch, true)
+
 /// Enable the explicit 'import Builtin' and allow Builtin usage.
 EXPERIMENTAL_FEATURE(BuiltinModule, true)
 

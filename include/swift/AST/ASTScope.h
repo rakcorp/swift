@@ -1120,6 +1120,35 @@ public:
   }
 };
 
+/// The scope of the initializer of a 'do' binding in a 'guard' condition, as in
+/// `guard do let x = try f() catch { ... }`. Like the initializer of any other
+/// conditional clause, it can't see the bindings of its own pattern. The
+/// errors it throws are caught by the guard's 'catch' clauses.
+class DoBindingInitializerScope final : public ASTScopeImpl {
+public:
+  Expr *const initializer;
+
+  DoBindingInitializerScope(Expr *initializer)
+      : ASTScopeImpl(ScopeKind::DoBindingInitializer),
+        initializer(initializer) {}
+
+  virtual ~DoBindingInitializerScope() {}
+  SourceRange
+  getSourceRangeOfThisASTNode(bool omitAssertions = false) const override;
+
+private:
+  void expandAScopeThatDoesNotCreateANewInsertionPoint(ScopeCreator &);
+
+protected:
+  ASTScopeImpl *expandSpecifically(ScopeCreator &scopeCreator) override;
+  NullablePtr<const ASTScopeImpl> getLookupParent() const override;
+
+public:
+  static bool classof(const ASTScopeImpl *scope) {
+    return scope->getKind() == ScopeKind::DoBindingInitializer;
+  }
+};
+
 /// If, while, & guard statements all start with a conditional clause, then some
 /// later part of the statement, (then, body, or after the guard) circumvents
 /// the normal lookup rule to pass the lookup scope into the deepest conditional
@@ -1561,6 +1590,39 @@ protected:
 public:
   static bool classof(const ASTScopeImpl *scope) {
     return scope->getKind() == ScopeKind::GuardStmtBody;
+  }
+};
+
+/// The scope of a 'catch' clause of a 'guard' with 'do' bindings. As with the
+/// 'else' body, the lookup parent is the scope of the whole guard statement,
+/// not the scopes of the conditions, since none of the bindings they introduce
+/// are in scope in the clause.
+class GuardStmtCatchScope final : public ASTScopeImpl {
+public:
+  ASTScopeImpl *const lookupParent;
+  CaseStmt *const stmt;
+
+  GuardStmtCatchScope(ASTScopeImpl *lookupParent, CaseStmt *stmt)
+      : ASTScopeImpl(ScopeKind::GuardStmtCatch), lookupParent(lookupParent),
+        stmt(stmt) {}
+  virtual ~GuardStmtCatchScope() {}
+
+  SourceRange
+  getSourceRangeOfThisASTNode(bool omitAssertions = false) const override;
+
+private:
+  void expandAScopeThatDoesNotCreateANewInsertionPoint(ScopeCreator &);
+
+protected:
+  ASTScopeImpl *expandSpecifically(ScopeCreator &) override;
+  NullablePtr<const ASTScopeImpl> getLookupParent() const override {
+    return lookupParent;
+  }
+  bool isLabeledStmtLookupTerminator() const override;
+
+public:
+  static bool classof(const ASTScopeImpl *scope) {
+    return scope->getKind() == ScopeKind::GuardStmtCatch;
   }
 };
 

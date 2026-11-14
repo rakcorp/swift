@@ -5467,6 +5467,11 @@ checkImplicitPromotionsInCondition(const StmtConditionElement &cond,
   auto *p = cond.getPatternOrNull();
   if (!p) return;
 
+  // A 'do' binding doesn't check for an optional, so promoting its initializer
+  // to an optional is fine.
+  if (cond.isDoBinding())
+    return;
+
   if (auto *subExpr = isImplicitPromotionToOptional(cond.getInitializer())) {
     // If the subexpression was actually optional, then the pattern must be
     // checking for a type, which forced it to be promoted to a double optional

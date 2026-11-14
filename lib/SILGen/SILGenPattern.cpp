@@ -4186,7 +4186,7 @@ void SILGenFunction::emitSwitchFallthrough(FallthroughStmt *S) {
   Cleanups.emitBranchAndCleanups(sharedDest, S, args);
 }
 
-void SILGenFunction::emitCatchDispatch(DoCatchStmt *S, ManagedValue exn,
+void SILGenFunction::emitCatchDispatch(Stmt *S, ManagedValue exn,
                                        ArrayRef<CaseStmt *> clauses,
                                        JumpDest catchFallthroughDest) {
   auto completionHandler = [&](PatternMatchEmission &emission,
@@ -4318,8 +4318,8 @@ void SILGenFunction::emitCatchDispatch(DoCatchStmt *S, ManagedValue exn,
 
   // Add a row for each label of each case.
   SmallVector<ClauseRow, 8> clauseRows;
-  clauseRows.reserve(S->getCatches().size());
-  for (auto caseBlock : S->getCatches()) {
+  clauseRows.reserve(clauses.size());
+  for (auto caseBlock : clauses) {
     // If we have multiple case label items, create a shared case block to
     // generate the shared block.
     if (caseBlock->getCaseLabelItems().size() > 1) {

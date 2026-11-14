@@ -334,6 +334,17 @@ PatternEntryInitializerScope::getLookupParent() const {
 }
 
 NullablePtr<const ASTScopeImpl>
+DoBindingInitializerScope::getLookupParent() const {
+  auto parent = getParent().get();
+  ASTScopeAssert(isa<ConditionalClausePatternUseScope>(parent),
+                 "DoBindingInitializerScope in unexpected place");
+
+  // As for any conditional clause initializer, lookups skip the scope that
+  // introduces the bindings bound by the pattern.
+  return parent->getLookupParent();
+}
+
+NullablePtr<const ASTScopeImpl>
 ConditionalClauseInitializerScope::getLookupParent() const {
   auto parent = getParent().get();
   ASTScopeAssert(isa<ConditionalClausePatternUseScope>(parent),
@@ -569,6 +580,10 @@ bool GuardStmtBodyScope::isLabeledStmtLookupTerminator() const {
   return false;
 }
 
+bool GuardStmtCatchScope::isLabeledStmtLookupTerminator() const {
+  return false;
+}
+
 bool ConditionalClausePatternUseScope::isLabeledStmtLookupTerminator() const {
   return false;
 }
@@ -763,6 +778,16 @@ CatchNode ASTScopeImpl::lookupCatchNode(ModuleDecl *module, SourceLoc loc) {
       auto caught = getCatchNode(catchScope);
       if (caught && !locationIsPriorToStartOfCatchScope(loc, caught))
           return caught;
+    }
+
+    // The initializer of a 'do' binding in a 'guard' is covered by the 'catch'
+    // clauses of the guard.
+    if (isa<DoBindingInitializerScope>(scope)) {
+      for (auto guardScope = scope; guardScope;
+           guardScope = guardScope->getParent().getPtrOrNull()) {
+        if (auto *guard = dyn_cast<GuardStmtScope>(guardScope))
+          return guard->stmt;
+      }
     }
 
     // If this is a try scope for a try! or try?, it catches the error.

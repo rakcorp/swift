@@ -783,6 +783,9 @@ public:
     ShouldRecurse_t recurse = ShouldRecurse;
     if (auto doCatch = dyn_cast<DoCatchStmt>(S)) {
       recurse = asImpl().checkDoCatch(doCatch);
+    } else if (auto guard = dyn_cast<GuardStmt>(S);
+               guard && !guard->getCatches().empty()) {
+      recurse = asImpl().checkGuardDoCatch(guard);
     } else if (auto thr = dyn_cast<ThrowStmt>(S)) {
       recurse = asImpl().checkThrow(thr);
     } else if (auto forEach = dyn_cast<ForEachStmt>(S)) {
@@ -806,6 +809,56 @@ public:
     for (auto clause : S->getCatches()) {
       asImpl().checkCatch(clause, bodyResult);
     }
+    return ShouldNotRecurse;
+  }
+
+  /// Walk the part of a do-catch statement whose errors its 'catch' clauses
+  /// handle, which is its body.
+  void walkCatchBody(DoCatchStmt *S) { S->getBody()->walk(asImpl()); }
+
+  /// Walk the part of a guard whose errors its 'catch' clauses handle, which
+  /// is the initializers of its 'do' bindings.
+  void walkCatchBody(GuardStmt *S) {
+    for (auto &elt : S->getCond()) {
+      if (elt.isDoBinding())
+        elt.walk(asImpl());
+    }
+  }
+
+  /// The source range that the 'catch' clauses of the given statement cover.
+  static SourceRange getCatchBodyRange(DoCatchStmt *S) {
+    return S->getBody()->getSourceRange();
+  }
+
+  static SourceRange getCatchBodyRange(GuardStmt *S) {
+    SourceRange range;
+    for (auto &elt : S->getCond()) {
+      if (!elt.isDoBinding())
+        continue;
+      if (range.isInvalid())
+        range = elt.getSourceRange();
+      else
+        range.widen(elt.getSourceRange());
+    }
+    return range;
+  }
+
+  /// Check a `guard` that has 'do' bindings. Its conditions other than the
+  /// 'do' bindings and its 'else' body are not covered by its 'catch' clauses,
+  /// whereas the initializers of its 'do' bindings are, like the body of a
+  /// 'do' statement.
+  ShouldRecurse_t checkGuardDoCatchWithCoverage(GuardStmt *S) {
+    for (auto &elt : S->getCond()) {
+      if (!elt.isDoBinding())
+        elt.walk(asImpl());
+    }
+    S->getBody()->walk(asImpl());
+
+    auto bodyResult = (S->isSyntacticallyExhaustive()
+        ? asImpl().checkExhaustiveDoBody(S)
+        : asImpl().checkNonExhaustiveDoBody(S));
+    for (auto clause : S->getCatches())
+      asImpl().checkCatch(clause, bodyResult);
     return ShouldNotRecurse;
   }
 
@@ -2430,17 +2483,39 @@ private:
       return ShouldNotRecurse;
     }
         
+    ShouldRecurse_t checkGuardDoCatch(GuardStmt *G) {
+      return checkGuardDoCatchWithCoverage(G);
+    }
+
     ConditionalEffectKind checkExhaustiveDoBody(DoCatchStmt *S) {
+      return checkExhaustiveBody(S);
+    }
+
+    ConditionalEffectKind checkExhaustiveDoBody(GuardStmt *S) {
+      return checkExhaustiveBody(S);
+    }
+
+    template <typename CatchingStmt>
+    ConditionalEffectKind checkExhaustiveBody(CatchingStmt *S) {
       // All errors thrown by the do body are caught, but any errors thrown
       // by the catch bodies are bounded by the throwing kind of the do body.
       llvm::SaveAndRestore<Classification> savedClassification(
           classification, Classification());
-      S->getBody()->walk(*this);
+      walkCatchBody(S);
       return classification.getConditionalKind(EffectKind::Throws);
     }
 
     ConditionalEffectKind checkNonExhaustiveDoBody(DoCatchStmt *S) {
-      S->getBody()->walk(*this);
+      return checkNonExhaustiveBody(S);
+    }
+
+    ConditionalEffectKind checkNonExhaustiveDoBody(GuardStmt *S) {
+      return checkNonExhaustiveBody(S);
+    }
+
+    template <typename CatchingStmt>
+    ConditionalEffectKind checkNonExhaustiveBody(CatchingStmt *S) {
+      walkCatchBody(S);
       // Because catch bodies can only be executed if the do body throws an
       // error, and because the do is non-exhaustive, we can skip checking the
       // catch bodies entirely.
@@ -2542,6 +2617,10 @@ private:
     }
 
     ShouldRecurse_t checkDoCatch(DoCatchStmt *S) {
+      return ShouldRecurse;
+    }
+
+    ShouldRecurse_t checkGuardDoCatch(GuardStmt *G) {
       return ShouldRecurse;
     }
 
@@ -2654,6 +2733,10 @@ private:
     }
 
     ShouldRecurse_t checkDoCatch(DoCatchStmt *S) {
+      return ShouldRecurse;
+    }
+
+    ShouldRecurse_t checkGuardDoCatch(GuardStmt *G) {
       return ShouldRecurse;
     }
 
@@ -4283,20 +4366,46 @@ private:
     return ShouldNotRecurse;
   }
 
+  ShouldRecurse_t checkGuardDoCatch(GuardStmt *S) {
+    return checkGuardDoCatchWithCoverage(S);
+  }
+
   ConditionalEffectKind checkExhaustiveDoBody(DoCatchStmt *S) {
+    return checkExhaustiveBody(S);
+  }
+
+  ConditionalEffectKind checkExhaustiveDoBody(GuardStmt *S) {
+    return checkExhaustiveBody(S);
+  }
+
+  /// Check the body of a statement that has exhaustive 'catch' clauses, which
+  /// are a do-catch or a guard.
+  template <typename CatchingStmt>
+  ConditionalEffectKind checkExhaustiveBody(CatchingStmt *S) {
     // This is a context where errors are handled.
     ContextScope scope(*this, CurContext.withHandlesErrors());
     assert(!Flags.has(ContextFlags::IsInTry) && "do/catch within try?");
     scope.resetCoverageForDoCatch();
 
-    S->getBody()->walk(*this);
+    walkCatchBody(S);
 
-    diagnoseNoThrowInDo(S, scope, S->getBody()->getSourceRange());
+    diagnoseNoThrowInDo(S->getCatches(), scope, getCatchBodyRange(S));
 
     return MaxThrowingKind;
   }
 
   ConditionalEffectKind checkNonExhaustiveDoBody(DoCatchStmt *S) {
+    return checkNonExhaustiveBody(S);
+  }
+
+  ConditionalEffectKind checkNonExhaustiveDoBody(GuardStmt *S) {
+    return checkNonExhaustiveBody(S);
+  }
+
+  /// Check the body of a statement that has non-exhaustive 'catch' clauses,
+  /// which are a do-catch or a guard.
+  template <typename CatchingStmt>
+  ConditionalEffectKind checkNonExhaustiveBody(CatchingStmt *S) {
     ContextScope scope(*this, std::nullopt);
     assert(!Flags.has(ContextFlags::IsInTry) && "do/catch within try?");
     scope.resetCoverageForDoCatch();
@@ -4313,9 +4422,9 @@ private:
           checkThrownErrorType(catches.back()->getEndLoc(), rethrownErrorType));
     }
 
-    S->getBody()->walk(*this);
+    walkCatchBody(S);
 
-    diagnoseNoThrowInDo(S, scope, S->getBody()->getSourceRange());
+    diagnoseNoThrowInDo(S->getCatches(), scope, getCatchBodyRange(S));
 
     scope.preserveCoverageFromNonExhaustiveCatch();
     return MaxThrowingKind;
@@ -4342,14 +4451,14 @@ private:
   }
 
   void diagnoseNoThrowInDo(
-      DoCatchStmt *S, ContextScope &scope, SourceRange bodyRange
+      ArrayRef<CaseStmt *> catches, ContextScope &scope, SourceRange bodyRange
   ) {
     // Warn if nothing threw within the body, unless this is the
     // implicit do/catch in a debugger function.
     if (!Flags.has(ContextFlags::HasAnyThrowSite) &&
         !scope.wasTopLevelDebuggerFunction() &&
         !inactiveCodeContainsTryOrThrow(bodyRange)) {
-      Ctx.Diags.diagnose(S->getCatches().front()->getStartLoc(),
+      Ctx.Diags.diagnose(catches.front()->getStartLoc(),
                          diag::no_throw_in_do_with_catch);
     }
   }
@@ -5358,6 +5467,26 @@ std::optional<Type> TypeChecker::canThrow(ASTContext &ctx, Expr *expr) {
   return classification.getThrownError();
 }
 
+/// Determine the type of the error that is thrown out of the region that a
+/// statement with 'catch' clauses covers, given the effects of that region.
+static Type getCatchErrorType(ASTContext &ctx, Classification classification,
+                              bool isSyntacticallyExhaustive) {
+  // If it doesn't throw at all, the type is Never.
+  if (!classification.hasThrows()) {
+    // Source compatibility: if the do..catch was already exhaustive,
+    // and we aren't doing full typed throws, treat the caught error
+    // type as 'any Error' to allow pattern-matches to continue to
+    // type check.
+    if (!ctx.LangOpts.hasFeature(Feature::FullTypedThrows) &&
+        isSyntacticallyExhaustive)
+      return ctx.getErrorExistentialType();
+
+    return ctx.getNeverType();
+  }
+
+  return classification.getThrownError();
+}
+
 Type TypeChecker::catchErrorType(DeclContext *dc, DoCatchStmt *stmt) {
   ASTContext &ctx = dc->getASTContext();
 
@@ -5371,21 +5500,24 @@ Type TypeChecker::catchErrorType(DeclContext *dc, DoCatchStmt *stmt) {
   ApplyClassifier classifier(ctx);
   Classification classification = classifier.classifyStmt(
       stmt->getBody(), EffectKind::Throws);
+  return getCatchErrorType(ctx, classification,
+                           stmt->isSyntacticallyExhaustive());
+}
 
-  // If it doesn't throw at all, the type is Never.
-  if (!classification.hasThrows()) {
-    // Source compatibility: if the do..catch was already exhaustive,
-    // and we aren't doing full typed throws, treat the caught error
-    // type as 'any Error' to allow pattern-matches to continue to
-    // type check.
-    if (!ctx.LangOpts.hasFeature(Feature::FullTypedThrows) &&
-        stmt->isSyntacticallyExhaustive())
-      return ctx.getErrorExistentialType();
+Type TypeChecker::catchErrorType(DeclContext *dc, GuardStmt *stmt) {
+  ASTContext &ctx = dc->getASTContext();
 
-    return ctx.getNeverType();
+  // The caught errors are those that the initializers of the 'do' bindings
+  // throw.
+  ApplyClassifier classifier(ctx);
+  Classification classification;
+  for (auto &elt : stmt->getCond()) {
+    if (elt.isDoBinding())
+      classification.merge(classifier.classifyExpr(elt.getInitializer(),
+                                                   EffectKind::Throws));
   }
-
-  return classification.getThrownError();
+  return getCatchErrorType(ctx, classification,
+                           stmt->isSyntacticallyExhaustive());
 }
 
 /// Explode the given type into the set of error unions.

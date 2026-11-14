@@ -23,12 +23,14 @@
 namespace swift {
 
 namespace detail {
-using CatchNodeBase = llvm::PointerUnion<AbstractFunctionDecl *, ClosureExpr *,
-                                         DoCatchStmt *, AnyTryExpr *>;
+using CatchNodeBase =
+    llvm::PointerUnion<AbstractFunctionDecl *, ClosureExpr *, DoCatchStmt *,
+                       GuardStmt *, AnyTryExpr *>;
 } // end namespace detail
 
 /// An AST node that represents a point where a thrown error can be caught and
-/// or rethrown, which includes functions do...catch statements.
+/// or rethrown, which includes functions, do...catch statements and guard
+/// statements with 'catch' clauses.
 class CatchNode : public detail::CatchNodeBase {
 public:
   using Base = detail::CatchNodeBase;

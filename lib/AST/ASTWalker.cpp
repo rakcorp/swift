@@ -2052,11 +2052,34 @@ Stmt *Traversal::visitIfStmt(IfStmt *IS) {
 Stmt *Traversal::visitGuardStmt(GuardStmt *US) {
   if (doIt(US->getCond()))
     return nullptr;
-  
-  if (BraceStmt *S2 = cast_or_null<BraceStmt>(doIt(US->getBody())))
-    US->setBody(S2);
-  else
-    return nullptr;
+
+  auto visitBody = [&]() -> bool {
+    if (BraceStmt *S2 = cast_or_null<BraceStmt>(doIt(US->getBody()))) {
+      US->setBody(S2);
+      return true;
+    }
+    return false;
+  };
+  auto visitCatches = [&]() -> bool {
+    // Visit each of the catch clauses.
+    for (CaseStmt *&clause : US->getMutableCatches()) {
+      if (auto newClause = doIt(clause)) {
+        clause = cast<CaseStmt>(newClause);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // The 'else' and 'catch' clauses can come in either order.
+  if (US->isElseAfterCatches()) {
+    if (!visitCatches() || !visitBody())
+      return nullptr;
+  } else {
+    if (!visitBody() || !visitCatches())
+      return nullptr;
+  }
   return US;
 }
 

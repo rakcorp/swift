@@ -117,8 +117,12 @@ static void diagnoseUnreachable(const SILInstruction *I,
     }
 
     if (auto *Guard = L.getAsASTNode<GuardStmt>()) {
-      diagnose(Context, Guard->getBody()->getEndLoc(),
-               diag::guard_body_must_not_fallthrough);
+      // A guard with only 'do' bindings has no 'else' body, only 'catch'
+      // clauses.
+      SourceLoc endLoc = Guard->getBody()->isImplicit()
+                             ? Guard->getEndLoc()
+                             : Guard->getBody()->getEndLoc();
+      diagnose(Context, endLoc, diag::guard_body_must_not_fallthrough);
       return;
     }
   }

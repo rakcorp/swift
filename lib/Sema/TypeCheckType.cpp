@@ -8281,5 +8281,10 @@ Type ExplicitCaughtTypeRequest::evaluate(
         /*packElementOpener*/ nullptr);
   }
 
+  // The 'catch' clauses of a guard never have an explicit thrown error type,
+  // so it is inferred.
+  if (isa<GuardStmt *>(catchNode))
+    return Type();
+
   llvm_unreachable("Unhandled catch node");
 }

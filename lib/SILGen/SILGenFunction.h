@@ -1847,7 +1847,10 @@ public:
 
   void emitBreakOutOf(SILLocation loc, Stmt *S);
 
-  void emitCatchDispatch(DoCatchStmt *S, ManagedValue exn,
+  /// Emit the dispatch of the error \p exn, which was thrown from the region
+  /// that the 'catch' clauses of \p S cover, to those clauses. \p S is a
+  /// do-catch or a guard.
+  void emitCatchDispatch(Stmt *S, ManagedValue exn,
                          ArrayRef<CaseStmt *> clauses,
                          JumpDest catchFallthroughDest);
 
@@ -1860,10 +1863,17 @@ public:
   // Patterns
   //===--------------------------------------------------------------------===//
 
+  /// Emit a statement condition, branching to \p FalseDest if it fails.
+  ///
+  /// \param DoBindingThrowDest the destination to which errors thrown by the
+  /// initializers of 'do' bindings (in a 'guard') are thrown, instead of the
+  /// current throw destination.
   void emitStmtCondition(StmtCondition Cond, JumpDest FalseDest,
                          Stmt *parentStmt,
                          ProfileCounter NumTrueTaken = ProfileCounter(),
-                         ProfileCounter NumFalseTaken = ProfileCounter());
+                         ProfileCounter NumFalseTaken = ProfileCounter(),
+                         std::optional<JumpDest> DoBindingThrowDest =
+                             std::nullopt);
 
   void emitConditionalPBD(PatternBindingDecl *PBD, SILBasicBlock *FailBB);
 

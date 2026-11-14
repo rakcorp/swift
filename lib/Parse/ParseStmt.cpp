@@ -1572,6 +1572,20 @@ Parser::parseStmtConditionElement(SmallVectorImpl<StmtConditionElement> &result,
     result.push_back(Expr.get());
   }
 
+  // Parse the 'do' marker of a 'do' binding, as in
+  // `guard do let x = try f() catch { ... }`. An expression can't start with
+  // 'do', so this is unambiguous.
+  SourceLoc DoLoc;
+  if (Context.LangOpts.hasFeature(Feature::GuardDoCatch) &&
+      Tok.is(tok::kw_do) && peekToken().isAny(tok::kw_let, tok::kw_var)) {
+    DoLoc = consumeToken(tok::kw_do);
+    if (ParentKind != StmtKind::Guard) {
+      // Recover by treating this as an ordinary binding.
+      diagnose(DoLoc, diag::do_binding_only_in_guard).fixItRemove(DoLoc);
+      DoLoc = SourceLoc();
+    }
+  }
+
   // Parse the basic expression case.  If we have a leading let/var/case
   // keyword or an assignment, then we know this is a binding.
   if (Tok.isNot(tok::kw_let, tok::kw_var, tok::kw_case) &&
@@ -1683,9 +1697,11 @@ Parser::parseStmtConditionElement(SmallVectorImpl<StmtConditionElement> &result,
             .value_or(PatternBindingState(PatternBindingState::InVar)),
         IntroducerLoc,
         /*isExprBasic*/ true);
-    // The let/var pattern is part of the statement.
+    // The let/var pattern is part of the statement. A 'do' binding doesn't
+    // unwrap an optional, so its pattern is an ordinary 'let'/'var' pattern.
     if (Pattern *P = ThePattern.getPtrOrNull())
-      P->setImplicit();
+      if (DoLoc.isInvalid())
+        P->setImplicit();
   }
 
   ThePattern = parseOptionalPatternTypeAnnotation(ThePattern);
@@ -1712,6 +1728,9 @@ Parser::parseStmtConditionElement(SmallVectorImpl<StmtConditionElement> &result,
   if (Tok.is(tok::equal)) {
     consumeToken();
     Init = parseExprBasic(diag::expected_expr_conditional_var);
+  } else if (DoLoc.isValid()) {
+    // A 'do' binding has no shorthand form.
+    diagnose(Tok, diag::conditional_var_initializer_required);
   } else if (!ThePattern.getPtrOrNull()->getBoundName().empty()) {
     auto bindingName = DeclNameRef(ThePattern.getPtrOrNull()->getBoundName());
     auto loc = DeclNameLoc(ThePattern.getPtrOrNull()->getEndLoc());
@@ -1758,7 +1777,7 @@ Parser::parseStmtConditionElement(SmallVectorImpl<StmtConditionElement> &result,
   }
 
   result.push_back(ConditionalPatternBindingInfo::create(
-      Context, IntroducerLoc, ThePattern.get(), Init.get()));
+      Context, IntroducerLoc, ThePattern.get(), Init.get(), DoLoc));
   return Status;
 }
 
@@ -2017,6 +2036,12 @@ ParserResult<Stmt> Parser::parseStmtIf(LabeledStmtInfo LabelInfo,
 
 ///   stmt-guard:
 ///     'guard' condition 'else' stmt-brace
+///     'guard' condition guard-clause+      (with a 'do' binding in condition)
+///   guard-clause:
+///     'else' stmt-brace
+///     stmt-catch
+///   stmt-condition-element:
+///     'do' ('let' | 'var') pattern '=' expr
 ///
 ParserResult<Stmt> Parser::parseStmtGuard() {
   SourceLoc GuardLoc = consumeToken(tok::kw_guard);
@@ -2056,25 +2081,92 @@ ParserResult<Stmt> Parser::parseStmtGuard() {
     }
   }
 
-  // Parse the 'else'.  If it is missing, and if the following token isn't a {
-  // then the parser is hopelessly lost - just give up instead of spewing.
-  if (!consumeIf(tok::kw_else)) {
-    checkForInputIncomplete();
-    auto diag = diagnose(Tok, diag::expected_else_after_guard);
-    if (Tok.is(tok::l_brace))
-      diag.fixItInsert(Tok.getLoc(), "else ");
+  // Parse the trailing 'else' and 'catch' clauses, which can come in either
+  // order. If there are none, and if the following token isn't a {, then the
+  // parser is hopelessly lost - just give up instead of spewing.
+  bool HasDoBinding = false, HasOtherCondition = false;
+  for (auto &elt : Condition) {
+    if (elt.isDoBinding())
+      HasDoBinding = true;
     else
-      return recoverWithCond(Status, Condition);
+      HasOtherCondition = true;
   }
 
-  Body = parseBraceItemList(diag::expected_lbrace_after_guard);
-  if (Body.isNull())
-    return recoverWithCond(Status, Condition);
+  if (!HasDoBinding) {
+    if (!consumeIf(tok::kw_else)) {
+      checkForInputIncomplete();
+      auto diag = diagnose(Tok, diag::expected_else_after_guard);
+      if (Tok.is(tok::l_brace))
+        diag.fixItInsert(Tok.getLoc(), "else ");
+      else
+        return recoverWithCond(Status, Condition);
+    }
 
-  Status |= Body;
-  
-  return makeParserResult(Status,
-              new (Context) GuardStmt(GuardLoc, Condition, Body.get()));
+    Body = parseBraceItemList(diag::expected_lbrace_after_guard);
+    if (Body.isNull())
+      return recoverWithCond(Status, Condition);
+
+    Status |= Body;
+
+    return makeParserResult(Status,
+                new (Context) GuardStmt(GuardLoc, Condition, Body.get()));
+  }
+
+  SmallVector<CaseStmt *, 4> Catches;
+  SourceLoc FirstCatchLoc;
+  while (Tok.isAny(tok::kw_else, tok::kw_catch)) {
+    if (Tok.is(tok::kw_else)) {
+      SourceLoc ElseLoc = consumeToken(tok::kw_else);
+      ParserResult<BraceStmt> ElseBody =
+          parseBraceItemList(diag::expected_lbrace_after_guard);
+      Status |= ElseBody;
+      if (ElseBody.isNull())
+        return recoverWithCond(Status, Condition);
+      if (Body.isNonNull()) {
+        diagnose(ElseLoc, diag::guard_multiple_else);
+        continue;
+      }
+      Body = ElseBody;
+      continue;
+    }
+
+    if (FirstCatchLoc.isInvalid())
+      FirstCatchLoc = Tok.getLoc();
+    ParserResult<CaseStmt> Clause = parseStmtCatch();
+    Status |= Clause;
+    if (Clause.isNull()) {
+      // Only happens when completing inside the catch pattern.
+      return recoverWithCond(Status, Condition);
+    }
+    Catches.push_back(Clause.get());
+    if (Status.hasCodeCompletion())
+      break;
+  }
+
+  if (Catches.empty()) {
+    checkForInputIncomplete();
+    diagnose(Tok, diag::expected_catch_after_guard_do);
+    return recoverWithCond(Status, Condition);
+  }
+
+  // A guard whose conditions are all 'do' bindings can't fail except by
+  // throwing, so it has no use for an 'else', and one is only needed if there
+  // are other conditions that can fail.
+  if (Body.isNonNull() && !HasOtherCondition) {
+    diagnose(Body.get()->getStartLoc(), diag::guard_do_only_else_unreachable);
+  } else if (Body.isNull() && HasOtherCondition) {
+    diagnose(FirstCatchLoc, diag::expected_else_after_guard);
+  }
+
+  if (Body.isNull()) {
+    SourceLoc EndLoc = Condition.back().getEndLoc();
+    Body = makeParserResult(
+        BraceStmt::create(Context, EndLoc, {}, EndLoc, /*implicit=*/true));
+  }
+
+  auto *Guard = new (Context) GuardStmt(GuardLoc, Condition, Body.get());
+  Guard->setCatches(Context.AllocateCopy(Catches));
+  return makeParserResult(Status, Guard);
 }
 
 /// 

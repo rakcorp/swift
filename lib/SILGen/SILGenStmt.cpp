@@ -1259,7 +1259,11 @@ void StmtEmitter::visitGuardStmt(GuardStmt *S) {
   JumpDest bodyBB =
     JumpDest(createBasicBlock(), SGF.getCleanupsDepth(), CleanupLocation(S));
 
-  {
+  // A guard with 'do' bindings has no 'else' body if all of its conditions are
+  // 'do' bindings, in which case the failure destination is never branched to.
+  bool hasElseBody = S->getCatches().empty() || !S->getBody()->isImplicit();
+
+  if (hasElseBody) {
     // Move the insertion point to the 'body' block temporarily and emit it.
     // Note that we don't push break/continue locations since they aren't valid
     // in this statement.
@@ -1274,10 +1278,65 @@ void StmtEmitter::visitGuardStmt(GuardStmt *S) {
       SGF.B.createUnreachable(S);
   }
 
+  // If the guard has 'do' bindings, errors thrown by their initializers are
+  // dispatched to the 'catch' clauses.
+  bool hasCatches = !S->getCatches().empty();
+  JumpDest throwDest = JumpDest::invalid();
+  SILValue exnArg;
+  const TypeLowering *exnTL = nullptr;
+  if (hasCatches) {
+    Type formalExnType = S->getCaughtErrorType();
+    exnTL = &SGF.getTypeLowering(formalExnType);
+
+    bool errorIsIndirect = exnTL->isAddress();
+    if (errorIsIndirect) {
+      exnArg = SGF.B.createAllocStack(S, exnTL->getLoweredType());
+      SGF.enterDeallocStackCleanup(exnArg);
+    }
+
+    throwDest = createThrowDest(S->getBody(), ThrownErrorInfo(exnArg));
+    if (!errorIsIndirect) {
+      exnArg = throwDest.getBlock()->createPhiArgument(
+          exnTL->getLoweredType(), OwnershipKind::Owned);
+    }
+  }
+
+  // Emit the 'catch' clauses before the conditions, for the same reason as the
+  // 'else' body: none of the bound variables are in scope in the clauses, and
+  // so their cleanups must not run when the clauses exit. If the initializers
+  // of the 'do' bindings don't throw, the block is left without predecessors
+  // and is removed later.
+  if (hasCatches) {
+    SILBasicBlock *BB = throwDest.getBlock();
+    SILGenSavedInsertionPoint savedIP(SGF, BB, FunctionSection::Postmatter);
+
+    Scope exnScope(SGF.Cleanups, CleanupLocation(S));
+
+    // Take ownership of the exception.
+    ManagedValue exn = SGF.emitManagedRValueWithCleanup(exnArg, *exnTL);
+
+    // Like the body of an 'else', the 'catch' clauses must end in a
+    // noreturn call, return, break etc.
+    JumpDest fallthroughDest = createJumpDest(S->getBody());
+    SGF.emitCatchDispatch(S, exn, S->getCatches(), fallthroughDest);
+    assert(!SGF.B.hasValidInsertionPoint());
+
+    if (auto *fallthroughBB = getOrEraseBlock(SGF, fallthroughDest)) {
+      SILGenSavedInsertionPoint fallthroughIP(SGF, fallthroughBB,
+                                              FunctionSection::Postmatter);
+      SGF.B.createUnreachable(S);
+    }
+  }
+
   // Emit the condition bindings, branching to the bodyBB if they fail.
   auto NumFalseTaken = SGF.loadProfilerCount(S->getBody());
   auto NumNonTaken = SGF.loadProfilerCount(S);
-  SGF.emitStmtCondition(S->getCond(), bodyBB, S, NumNonTaken, NumFalseTaken);
+  SGF.emitStmtCondition(S->getCond(), bodyBB, S, NumNonTaken, NumFalseTaken,
+                        hasCatches ? std::optional<JumpDest>(throwDest)
+                                   : std::nullopt);
+
+  if (!hasElseBody)
+    (void)getOrEraseBlock(SGF, bodyBB);
 }
 
 void StmtEmitter::visitWhileStmt(WhileStmt *S) {

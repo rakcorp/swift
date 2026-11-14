@@ -1405,6 +1405,10 @@ public:
       assignCounter(GS, CounterExpr::Zero());
       assignKnownCounter(GS->getBody());
 
+      // The catch clauses are CaseStmts that have their own mapped counters.
+      for (CaseStmt *Catch : GS->getCatches())
+        assignKnownCounter(Catch);
+
     } else if (auto *WS = dyn_cast<WhileStmt>(S)) {
       // The counter for the while statement itself tracks the number of jumps
       // to it by break and continue statements.

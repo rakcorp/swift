@@ -732,6 +732,10 @@ private:
     visitStmtCondition(guardStmt, elements, locator);
     elements.push_back(makeElement(guardStmt->getBody(), locator));
 
+    // The 'catch' clauses of a guard with 'do' bindings.
+    for (auto *catchClause : guardStmt->getCatches())
+      elements.push_back(makeElement(catchClause, locator));
+
     createConjunction(elements, locator);
   }
 
@@ -917,6 +921,17 @@ private:
           cs.recordPotentialThrowSite(
               PotentialThrowSite::NonExhaustiveDoCatch, contextualTy,
               cs.getConstraintLocator(doCatch));
+        }
+      } else if (auto guardStmt = dyn_cast_or_null<GuardStmt>(
+                     parent.dyn_cast<Stmt *>())) {
+        contextualTy = cs.getCaughtErrorType(guardStmt);
+
+        // A non-exhaustive set of 'catch' clauses is a potential throw site.
+        if (caseStmt == guardStmt->getCatches().back() &&
+            !guardStmt->isSyntacticallyExhaustive()) {
+          cs.recordPotentialThrowSite(
+              PotentialThrowSite::NonExhaustiveDoCatch, contextualTy,
+              cs.getConstraintLocator(guardStmt));
         }
       } else {
         hadError = true;
@@ -1707,6 +1722,9 @@ private:
 
     auto *body = cast<Stmt *>(visit(guardStmt->getBody()));
     guardStmt->setBody(cast<BraceStmt>(body));
+
+    for (auto catchStmt : guardStmt->getCatches())
+      visitCaseStmt(catchStmt);
     return guardStmt;
   }
 

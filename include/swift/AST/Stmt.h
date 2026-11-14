@@ -474,19 +474,32 @@ class alignas(8) ConditionalPatternBindingInfo
   /// The value for matching.
   Expr *Initializer;
 
+  /// Location of the 'do' marker in `guard do let x = try f() catch ...`, or
+  /// invalid if this isn't a 'do' binding.
+  SourceLoc DoLoc;
+
   ConditionalPatternBindingInfo(SourceLoc IntroducerLoc, Pattern *ThePattern,
-                                Expr *Initializer)
+                                Expr *Initializer, SourceLoc DoLoc)
       : IntroducerLoc(IntroducerLoc), ThePattern(ThePattern),
-        Initializer(Initializer) {}
+        Initializer(Initializer), DoLoc(DoLoc) {}
 
 public:
   static ConditionalPatternBindingInfo *create(ASTContext &ctx,
                                                SourceLoc IntroducerLoc,
                                                Pattern *ThePattern,
-                                               Expr *Initializer) {
-    return new (ctx)
-        ConditionalPatternBindingInfo(IntroducerLoc, ThePattern, Initializer);
+                                               Expr *Initializer,
+                                               SourceLoc DoLoc = SourceLoc()) {
+    return new (ctx) ConditionalPatternBindingInfo(IntroducerLoc, ThePattern,
+                                                   Initializer, DoLoc);
   }
+
+  /// Whether this binding was introduced with the 'do' marker, as in
+  /// `guard do let x = try f() catch { ... }`. Errors thrown by the
+  /// initializer of such a binding are handled by the 'catch' clauses of the
+  /// enclosing 'guard', and the pattern is matched irrefutably, without
+  /// unwrapping an optional.
+  bool isDoBinding() const { return DoLoc.isValid(); }
+  SourceLoc getDoLoc() const { return DoLoc; }
 
   SourceLoc getIntroducerLoc() const { return IntroducerLoc; }
   void setIntroducerLoc(SourceLoc Loc) { IntroducerLoc = Loc; }
@@ -710,6 +723,13 @@ public:
 
   SourceLoc getIntroducerLoc() const {
     return getPatternBinding()->getIntroducerLoc();
+  }
+
+  /// Whether this is a 'do' binding condition (see
+  /// ConditionalPatternBindingInfo::isDoBinding).
+  bool isDoBinding() const {
+    auto *binding = getPatternBindingOrNull();
+    return binding && binding->isDoBinding();
   }
 
   void setIntroducerLoc(SourceLoc loc) {
@@ -950,7 +970,15 @@ public:
 class GuardStmt : public LabeledConditionalStmt {
   SourceLoc GuardLoc;
   BraceStmt *Body;
-  
+
+  /// The 'catch' clauses of a guard with 'do' binding conditions, which handle
+  /// the errors thrown by the initializers of those bindings.
+  MutableArrayRef<CaseStmt *> Catches;
+
+  /// If the 'catch' clauses aren't exhaustive, how the unhandled errors are
+  /// rethrown.
+  ThrownErrorDestination RethrowDest;
+
 public:
   GuardStmt(SourceLoc GuardLoc, StmtCondition Cond, BraceStmt *Body,
             std::optional<bool> implicit = std::nullopt)
@@ -967,12 +995,46 @@ public:
   SourceLoc getStartLoc() const {
     return getLabelLocOrKeywordLoc(GuardLoc);
   }
-  SourceLoc getEndLoc() const {
-    return Body->getEndLoc();
-  }
-  
+  SourceLoc getEndLoc() const;
+
+  /// The 'else' body. If the guard has no 'else' clause (which is the case when
+  /// all conditions are 'do' bindings), this is an implicit empty brace.
   BraceStmt *getBody() const { return Body; }
   void setBody(BraceStmt *s) { Body = s; }
+
+  /// Whether the condition contains a 'do' binding.
+  bool hasDoBinding() const;
+
+  /// The 'catch' clauses, which handle the errors thrown by the initializers
+  /// of the guard's 'do' bindings. They are empty if there are no 'do'
+  /// bindings, and they can come before or after the 'else' body.
+  ArrayRef<CaseStmt *> getCatches() const { return Catches; }
+  MutableArrayRef<CaseStmt *> getMutableCatches() { return Catches; }
+
+  /// Set the 'catch' clauses, which must be allocated in the AST context.
+  void setCatches(MutableArrayRef<CaseStmt *> catches);
+
+  /// Whether the 'else' body comes after the 'catch' clauses in the source.
+  bool isElseAfterCatches() const;
+
+  /// Does this statement contain a syntactically exhaustive catch clause?
+  ///
+  /// Note that an exhaustive guard can still throw errors out of its 'catch'
+  /// clauses, and that its errors are only those of its 'do' bindings.
+  bool isSyntacticallyExhaustive() const;
+
+  /// The type of the error that is thrown by the initializers of the 'do'
+  /// bindings and caught by the 'catch' clauses. If the clauses aren't
+  /// exhaustive, this is also the type of the error that is implicitly
+  /// rethrown. Null until the clauses are type-checked.
+  Type getCaughtErrorType() const;
+
+  /// How the errors that the 'catch' clauses don't handle are rethrown.
+  ThrownErrorDestination rethrows() const { return RethrowDest; }
+  void setRethrows(ThrownErrorDestination rethrows) {
+    assert(!RethrowDest);
+    RethrowDest = rethrows;
+  }
   
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Stmt *S) { return S->getKind() == StmtKind::Guard; }
@@ -1355,9 +1417,10 @@ public:
 
   Stmt *getParentStmt() const { return ParentStmt; }
   void setParentStmt(Stmt *S) {
-    assert(S && "Parent statement must be SwitchStmt or DoCatchStmt");
+    assert(S && "Parent statement must be SwitchStmt, DoCatchStmt or GuardStmt");
     assert((ParentKind == CaseParentKind::Switch && isa<SwitchStmt>(S)) ||
-           (ParentKind == CaseParentKind::DoCatch && isa<DoCatchStmt>(S)));
+           (ParentKind == CaseParentKind::DoCatch &&
+            (isa<DoCatchStmt>(S) || isa<GuardStmt>(S))));
     ParentStmt = S;
   }
 

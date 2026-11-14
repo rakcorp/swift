@@ -14300,6 +14300,18 @@ CatchNode::getThrownErrorTypeInContext(ASTContext &ctx) const {
     return ctx.getErrorExistentialType();
   }
 
+  if (auto guard = dyn_cast<GuardStmt *>()) {
+    if (auto thrownError = guard->getCaughtErrorType()) {
+      if (thrownError->isNever())
+        return std::nullopt;
+
+      return thrownError;
+    }
+
+    // If we haven't computed the error type yet, return 'any Error'.
+    return ctx.getErrorExistentialType();
+  }
+
   auto tryExpr = cast<AnyTryExpr *>(*this);
   if (auto forceTry = llvm::dyn_cast<ForceTryExpr>(tryExpr)) {
     if (auto thrownError = forceTry->getThrownError())
@@ -14341,6 +14353,8 @@ SourceLoc swift::extractNearestSourceLoc(CatchNode catchNode) {
     return closure->getLoc();
   if (auto doCatch = catchNode.dyn_cast<DoCatchStmt *>())
     return doCatch->getDoLoc();
+  if (auto guard = catchNode.dyn_cast<GuardStmt *>())
+    return guard->getGuardLoc();
   if (auto tryExpr = catchNode.dyn_cast<AnyTryExpr *>())
     return tryExpr->getTryLoc();
   llvm_unreachable("Unhandled catch node");
@@ -14354,6 +14368,10 @@ bool ExplicitCaughtTypeRequest::isCached() const {
 
   // try? and try! never need to be cached.
   if (isa<AnyTryExpr *>(catchNode))
+    return false;
+
+  // Guards with 'catch' clauses never have an explicit thrown type.
+  if (isa<GuardStmt *>(catchNode))
     return false;
 
   // Functions with explicitly-written thrown types need the result cached.
@@ -14400,6 +14418,10 @@ std::optional<Type> ExplicitCaughtTypeRequest::getCachedResult() const {
   if (auto doCatch = catchNode.dyn_cast<DoCatchStmt *>()) {
     return nonnullTypeOrNone(doCatch->ThrownType.getType());
   }
+
+  // Guards with 'catch' clauses never have an explicit thrown type.
+  if (isa<GuardStmt *>(catchNode))
+    return std::nullopt;
 
   llvm_unreachable("Unhandled catch node");
 }

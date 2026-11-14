@@ -325,6 +325,11 @@ SourceRange ConditionalClauseInitializerScope::getSourceRangeOfThisASTNode(
   return initializer->getSourceRange();
 }
 
+SourceRange DoBindingInitializerScope::getSourceRangeOfThisASTNode(
+    const bool omitAssertions) const {
+  return initializer->getSourceRange();
+}
+
 SourceRange ConditionalClausePatternUseScope::getSourceRangeOfThisASTNode(
     const bool omitAssertions) const {
   return SourceRange(sec.getInitializer()->getStartLoc(), endLoc);
@@ -358,6 +363,11 @@ SourceRange GuardStmtScope::getSourceRangeOfThisASTNode(
 SourceRange GuardStmtBodyScope::getSourceRangeOfThisASTNode(
     const bool omitAssertions) const {
   return body->getSourceRange();
+}
+
+SourceRange GuardStmtCatchScope::getSourceRangeOfThisASTNode(
+    const bool omitAssertions) const {
+  return stmt->getSourceRange();
 }
 
 #pragma mark source range caching

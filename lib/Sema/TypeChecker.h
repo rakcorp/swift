@@ -1165,6 +1165,13 @@ std::optional<Type> canThrow(ASTContext &ctx, Expr *expr);
 /// do-catch, is implicitly rethrown out of the do...catch block.
 Type catchErrorType(DeclContext *dc, DoCatchStmt *stmt);
 
+/// Determine the error type that is thrown by the initializers of the 'do'
+/// bindings of the given guard statement.
+///
+/// The error type is used in the catch clauses and, if they aren't exhaustive,
+/// is implicitly rethrown out of the guard.
+Type catchErrorType(DeclContext *dc, GuardStmt *stmt);
+
 /// Given two error types, merge them into the "union" of both error types
 /// that is a supertype of both error types.
 ///

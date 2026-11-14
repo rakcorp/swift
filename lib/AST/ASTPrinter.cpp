@@ -6263,8 +6263,14 @@ void PrintAST::visitIfStmt(IfStmt *stmt) {
 void PrintAST::visitGuardStmt(GuardStmt *stmt) {
   Printer << tok::kw_guard << " ";
   printStmtCondition(stmt->getCond());
-  Printer << " else ";
-  visit(stmt->getBody());
+  if (stmt->getCatches().empty() || !stmt->getBody()->isImplicit()) {
+    Printer << " else ";
+    visit(stmt->getBody());
+  }
+  for (auto *clause : stmt->getCatches()) {
+    Printer << " ";
+    visit(clause);
+  }
 }
 
 void PrintAST::visitWhileStmt(WhileStmt *stmt) {
@@ -6303,6 +6309,8 @@ void PrintAST::printStmtCondition(StmtCondition condition) {
           break;
 
         case StmtConditionElement::ConditionKind::CK_PatternBinding:
+          if (elt.isDoBinding())
+            Printer << tok::kw_do << " ";
           printPattern(elt.getPattern());
           if (auto initializer = elt.getInitializer()) {
             Printer << " = ";

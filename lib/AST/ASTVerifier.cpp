@@ -1192,6 +1192,24 @@ public:
 
     void verifyChecked(GuardStmt *S) {
       checkCondition(S->getCond());
+
+      // A guard has 'catch' clauses exactly when it has 'do' bindings, and the
+      // clauses point back to the guard.
+      if (S->hasDoBinding() != !S->getCatches().empty()) {
+        Out << "guard statement must have 'catch' clauses if and only if it "
+               "has a 'do' binding\n";
+        S->dump(Out);
+        abort();
+      }
+      for (auto *catchClause : S->getCatches()) {
+        if (catchClause->getParentStmt() != S) {
+          Out << "'catch' clause of a guard statement doesn't point back to "
+                 "it\n";
+          S->dump(Out);
+          abort();
+        }
+      }
+
       verifyCheckedBase(S);
     }
 

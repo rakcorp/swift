@@ -1198,6 +1198,15 @@ ERROR(expected_else_after_guard,PointsToFirstBadToken,
       "expected 'else' after 'guard' condition", ())
 ERROR(expected_lbrace_after_guard,PointsToFirstBadToken,
       "expected '{' after 'guard' else", ())
+ERROR(expected_catch_after_guard_do,PointsToFirstBadToken,
+      "expected 'catch' after 'guard' condition with a 'do' binding", ())
+ERROR(guard_do_only_else_unreachable,none,
+      "'else' is never executed when all conditions are 'do' bindings; remove "
+      "it", ())
+ERROR(guard_multiple_else,none,
+      "'guard' can have at most one 'else' clause", ())
+ERROR(do_binding_only_in_guard,none,
+      "'do' bindings are only supported in 'guard' conditions", ())
 
 // While Statement
 ERROR(expected_condition_while,PointsToFirstBadToken,

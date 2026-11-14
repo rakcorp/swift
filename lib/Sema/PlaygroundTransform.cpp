@@ -225,6 +225,14 @@ public:
   GuardStmt *transformGuardStmt(GuardStmt *GS) {
     if (BraceStmt *BS = GS->getBody())
       GS->setBody(transformBraceStmt(BS));
+    for (CaseStmt *C : GS->getCatches()) {
+      if (auto *CB = dyn_cast_or_null<BraceStmt>(C->getBody())) {
+        BraceStmt *NCB = transformBraceStmt(CB);
+        if (NCB != CB) {
+          C->setBody(NCB);
+        }
+      }
+    }
     return GS;
   }
 

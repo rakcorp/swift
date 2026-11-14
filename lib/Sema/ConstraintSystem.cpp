@@ -489,8 +489,8 @@ void ConstraintSystem::recordPotentialThrowSite(
     return;
 
   // do..catch statements without an explicit `throws` clause do infer
-  // thrown types.
-  if (isa<DoCatchStmt *>(catchNode)) {
+  // thrown types, and so do guard statements with `catch` clauses.
+  if (isa<DoCatchStmt *, GuardStmt *>(catchNode)) {
     PotentialThrowSite site{kind, type, getConstraintLocator(locator)};
     recordPotentialThrowSite(catchNode, site);
     return;
@@ -1309,7 +1309,11 @@ FunctionType::ExtInfo ClosureEffectsRequest::evaluate(
     }
 
     bool isSyntacticallyExhaustive(DoCatchStmt *stmt) {
-      for (auto catchClause : stmt->getCatches()) {
+      return isSyntacticallyExhaustive(stmt->getCatches());
+    }
+
+    bool isSyntacticallyExhaustive(ArrayRef<CaseStmt *> catches) {
+      for (auto catchClause : catches) {
         for (auto &LabelItem : catchClause->getMutableCaseLabelItems()) {
           if (isSyntacticallyExhaustive(catchClause->getStartLoc(),
                                         LabelItem))
@@ -1417,6 +1421,33 @@ FunctionType::ExtInfo ClosureEffectsRequest::evaluate(
 
         // We've already walked all the children we care about.
         return Action::SkipNode(stmt);
+      }
+
+      // Handle a guard with 'do' bindings like a do/catch: the initializers of
+      // the bindings can only throw out of the closure if the 'catch' clauses
+      // aren't syntactically exhaustive.
+      if (auto guard = dyn_cast<GuardStmt>(stmt)) {
+        if (!guard->getCatches().empty()) {
+          bool exhaustive = isSyntacticallyExhaustive(guard->getCatches());
+          for (auto &elt : guard->getCond()) {
+            if (elt.isDoBinding() && exhaustive)
+              continue;
+            elt.walk(*this);
+            if (FoundThrow)
+              return Action::Stop();
+          }
+
+          if (!guard->getBody()->walk(*this))
+            return Action::Stop();
+
+          for (auto catchClause : guard->getCatches()) {
+            if (!catchClause->walk(*this))
+              return Action::Stop();
+          }
+
+          // We've already walked all the children we care about.
+          return Action::SkipNode(stmt);
+        }
       }
 
       if (auto forEach = dyn_cast<ForEachStmt>(stmt)) {

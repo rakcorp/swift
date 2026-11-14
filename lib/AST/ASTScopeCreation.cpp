@@ -823,6 +823,7 @@ NO_NEW_INSERTION_POINT(AbstractFunctionDeclScope)
 NO_NEW_INSERTION_POINT(CustomAttributeScope)
 NO_NEW_INSERTION_POINT(EnumElementScope)
 NO_NEW_INSERTION_POINT(GuardStmtBodyScope)
+NO_NEW_INSERTION_POINT(GuardStmtCatchScope)
 NO_NEW_INSERTION_POINT(ParameterListScope)
 NO_NEW_INSERTION_POINT(PatternEntryInitializerScope)
 
@@ -831,6 +832,7 @@ NO_NEW_INSERTION_POINT(CaseStmtScope)
 NO_NEW_INSERTION_POINT(CaseLabelItemScope)
 NO_NEW_INSERTION_POINT(CaseStmtBodyScope)
 NO_NEW_INSERTION_POINT(ConditionalClauseInitializerScope)
+NO_NEW_INSERTION_POINT(DoBindingInitializerScope)
 NO_NEW_INSERTION_POINT(ClosureParametersScope)
 NO_NEW_INSERTION_POINT(DefaultArgumentInitializerScope)
 NO_NEW_INSERTION_POINT(DoStmtScope)
@@ -972,8 +974,13 @@ AnnotatedInsertionPoint
 ConditionalClausePatternUseScope::expandAScopeThatCreatesANewInsertionPoint(
     ScopeCreator &scopeCreator) {
   auto *initializer = sec.getInitializer();
-  scopeCreator.constructExpandAndInsert<ConditionalClauseInitializerScope>(
-      this, initializer);
+  if (sec.isDoBinding()) {
+    scopeCreator.constructExpandAndInsert<DoBindingInitializerScope>(
+        this, initializer);
+  } else {
+    scopeCreator.constructExpandAndInsert<ConditionalClauseInitializerScope>(
+        this, initializer);
+  }
 
   return {this,
           "Succeeding code must be in scope of conditional clause pattern bindings"};
@@ -981,6 +988,12 @@ ConditionalClausePatternUseScope::expandAScopeThatCreatesANewInsertionPoint(
 
 void
 ConditionalClauseInitializerScope::expandAScopeThatDoesNotCreateANewInsertionPoint(
+    ScopeCreator &scopeCreator) {
+  scopeCreator.addToScopeTree(ASTNode(initializer), this);
+}
+
+void
+DoBindingInitializerScope::expandAScopeThatDoesNotCreateANewInsertionPoint(
     ScopeCreator &scopeCreator) {
   scopeCreator.addToScopeTree(ASTNode(initializer), this);
 }
@@ -997,14 +1010,34 @@ GuardStmtScope::expandAScopeThatCreatesANewInsertionPoint(ScopeCreator &
   ASTScopeImpl *conditionLookupParent =
       createNestedConditionalClauseScopes(scopeCreator, endLoc);
 
-  // Add a child for the 'guard' body, which always exits.
+  // Add children for the 'else' body and the 'catch' clauses, which always
+  // exit. They can come in either order, so add them in source order.
   // The lookup parent is whole guard stmt scope, NOT the cond scopes
   auto *body = stmt->getBody();
-  if (!body->empty()) {
-    scopeCreator
-        .constructExpandAndInsert<GuardStmtBodyScope>(
-            conditionLookupParent, this, stmt->getBody());
+  auto &sourceMgr = scopeCreator.getASTContext().SourceMgr;
+
+  bool bodyAdded = body->empty();
+  auto addBody = [&]() {
+    if (!bodyAdded) {
+      scopeCreator.constructExpandAndInsert<GuardStmtBodyScope>(
+          conditionLookupParent, this, body);
+      bodyAdded = true;
+    }
+  };
+
+  if (!stmt->isElseAfterCatches())
+    addBody();
+  for (auto *catchClause : stmt->getCatches()) {
+    // Interleaved clauses are added between the catches.
+    if (!bodyAdded &&
+        sourceMgr.isBeforeInBuffer(body->getStartLoc(),
+                                   catchClause->getStartLoc()))
+      addBody();
+
+    scopeCreator.constructExpandAndInsert<GuardStmtCatchScope>(
+        conditionLookupParent, this, catchClause);
   }
+  addBody();
 
   return {conditionLookupParent,
           "Succeeding code must be in scope of guard variables"};
@@ -1215,6 +1248,19 @@ void ForEachPatternScope::expandAScopeThatDoesNotCreateANewInsertionPoint(
 }
 
 void CaseStmtScope::expandAScopeThatDoesNotCreateANewInsertionPoint(
+    ScopeCreator &scopeCreator) {
+  for (auto &item : stmt->getCaseLabelItems()) {
+    if (item.getGuardExpr()) {
+      scopeCreator.constructExpandAndInsert<CaseLabelItemScope>(this, item);
+    }
+  }
+
+  if (!stmt->getBody()->empty()) {
+    scopeCreator.constructExpandAndInsert<CaseStmtBodyScope>(this, stmt);
+  }
+}
+
+void GuardStmtCatchScope::expandAScopeThatDoesNotCreateANewInsertionPoint(
     ScopeCreator &scopeCreator) {
   for (auto &item : stmt->getCaseLabelItems()) {
     if (item.getGuardExpr()) {

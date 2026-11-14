@@ -1168,6 +1168,7 @@ namespace {
       case StmtConditionElement::CK_PatternBinding:
           printRecArbitrary([&](Label label) {
             printHead("pattern", PatternColor, label);
+            printFlag(C.isDoBinding(), "do");
             printRec(C.getPattern(), Label::optional("pattern"));
             printRec(C.getInitializer(), Label::optional("initializer"));
             printFoot();
@@ -3399,7 +3400,12 @@ public:
   void visitGuardStmt(GuardStmt *S, Label label) {
     printCommon(S, "guard_stmt", label);
     printRecRange(S->getCond(), Ctx, Label::always("conditions"));
-    printRec(S->getBody(), Label::optional("body"));
+    if (!S->getBody()->isImplicit() || S->getCatches().empty())
+      printRec(S->getBody(), Label::optional("body"));
+    if (!S->getCatches().empty()) {
+      printThrowDest(S->rethrows(), /*wantNothrow=*/true);
+      printRecRange(S->getCatches(), Ctx, Label::always("catch_stmts"));
+    }
     printFoot();
   }
 

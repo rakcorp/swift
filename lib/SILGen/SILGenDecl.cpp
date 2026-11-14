@@ -2146,7 +2146,8 @@ void SILGenFunction::visitMacroExpansionDecl(MacroExpansionDecl *D) {
 void SILGenFunction::emitStmtCondition(StmtCondition Cond, JumpDest FalseDest,
                                        Stmt *parentStmt,
                                        ProfileCounter NumTrueTaken,
-                                       ProfileCounter NumFalseTaken) {
+                                       ProfileCounter NumFalseTaken,
+                                       std::optional<JumpDest> DoBindingThrowDest) {
   // FIXME: The PGO counters here will be inaccurate when we have multiple
   // conditions.
 
@@ -2183,6 +2184,12 @@ void SILGenFunction::emitStmtCondition(StmtCondition Cond, JumpDest FalseDest,
           InitializationPtr initialization = emitPatternBindingInitialization(
               elt.getPattern(), FalseDest, /*debugInfo*/ true, NumTrueTaken,
               NumFalseTaken, customInitLoc);
+
+          // Errors thrown by the initializer of a 'do' binding go to the
+          // guard's 'catch' clauses.
+          std::optional<llvm::SaveAndRestore<JumpDest>> savedThrowDest;
+          if (elt.isDoBinding() && DoBindingThrowDest)
+            savedThrowDest.emplace(ThrowDest, *DoBindingThrowDest);
 
           if (initialization->isBorrow()) {
             emitExprInto(elt.getInitializer(), initialization.get(), loc);

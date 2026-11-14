@@ -1078,6 +1078,16 @@ typeCheckPatternBindingStmtConditionElement(StmtConditionElement &elt,
   }
   elt.setPattern(pattern);
 
+  // A 'do' binding never unwraps or tests its initializer, so its pattern has
+  // to match every value.
+  if (elt.isDoBinding() &&
+      pattern->isRefutablePattern(/*allowIsPatternCoercion*/ false)) {
+    dc->getASTContext().Diags.diagnose(pattern->getLoc(),
+                                       diag::do_binding_refutable_pattern);
+    typeCheckPatternFailed();
+    return true;
+  }
+
   // Check the pattern, it allows unspecified types because the pattern can
   // provide type information.
   auto contextualPattern = ContextualPattern::forRawPattern(pattern, dc);
@@ -1209,8 +1219,11 @@ static bool typeCheckConditionForStatement(LabeledConditionalStmt *stmt,
   auto &ctx = dc->getASTContext();
   auto &diags = ctx.Diags;
 
+  // A guard with 'do' bindings can also exit through its 'catch' clauses.
+  auto *guard = dyn_cast<GuardStmt>(stmt);
   bool diagnoseStmtAsAlwaysTrue =
-      !stmt->isImplicit() && !hadAnyFalsable && !hadError;
+      !stmt->isImplicit() && !hadAnyFalsable && !hadError &&
+      !(guard && guard->hasDoBinding());
 
   // Visit each element again to diagnose irrefutable elements.
   for (auto i : indices(cond)) {
@@ -1751,6 +1764,25 @@ public:
     BraceStmt *S = GS->getBody();
     typeCheckStmt(S);
     GS->setBody(S);
+
+    if (!GS->getCatches().empty()) {
+      // The 'catch' clauses handle the errors thrown by the initializers of
+      // the 'do' bindings.
+      Type caughtErrorType = TypeChecker::catchErrorType(DC, GS);
+
+      // If nothing throws, let's pretend it can throw 'any Error' just for
+      // type checking the patterns. That avoids superfluous diagnostics.
+      if (caughtErrorType->isNever())
+        caughtErrorType = Ctx.getErrorExistentialType();
+
+      // Like do-catch statements, always limit exhaustivity checks.
+      bool limitExhaustivityChecks = true;
+
+      auto catches = GS->getCatches();
+      checkSiblingCaseStmts(catches.begin(), catches.end(),
+                            CaseParentKind::DoCatch, limitExhaustivityChecks,
+                            caughtErrorType);
+    }
     return GS;
   }
 
